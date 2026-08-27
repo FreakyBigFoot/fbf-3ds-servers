@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Copy to run.sh and fill in for your own deployment. run.sh is gitignored.
+set -euo pipefail
+
+# --- your server's public address (what consoles connect to) ---
+export FFE_PUBLIC_HOST="your.server.example"     # public hostname or IP
+export FFE_SECURE_HOST="your.server.example"
+
+# --- database (Postgres) ---
+export FFE_POSTGRES_URI="postgres://ffe:CHANGE_ME@127.0.0.1:5432/ffe?sslmode=disable"
+
+# --- listeners ---
+export FFE_NASC_ADDR=":443"      # NASC/HTTPS (TLS)
+export FFE_HTTP_ADDR=":80"       # /register + dashboard + ACME challenge
+
+# --- TLS ---
+# 3DS (no SNI) is served the self-signed cert; browsers (SNI) get the LE cert.
+export FFE_TLS_CERT="certs/nasc.crt"
+export FFE_TLS_KEY="certs/nasc.key"
+export FFE_LE_CERT="/etc/letsencrypt/live/your.server.example/fullchain.pem"
+export FFE_LE_KEY="/etc/letsencrypt/live/your.server.example/privkey.pem"
+export FFE_ACME_WEBROOT="/opt/ffe/acme"
+
+exec ./ffe-server

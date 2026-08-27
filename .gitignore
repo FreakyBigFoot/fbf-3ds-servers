@@ -1,0 +1,34 @@
+# build artifacts
+server/ffe-server*
+server/ffe-local
+server/ffe-nex-server
+server/*-linux-amd64
+patcher/*.cia
+patcher/*.3dsx
+patcher/*.elf
+patcher/*.smdh
+patcher/*.bnr
+patcher/build/
+*.o
+# secrets & local config — NEVER commit
+server/run.sh
+.env
+*.env
+server/certs/
+*.key
+*.crt
+*.pem
+# logs & runtime
+*.log
+*.out
+log/
+# copyrighted / dumped game data — NEVER commit
+*.code
+*.cia
+*.3ds
+*.cci
+*.cxi
+dumps/
+saves/
+# misc
+.DS_Store
