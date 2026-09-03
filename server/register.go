@@ -61,6 +61,23 @@ func (a *accountStore) set(pid, pw string) {
 	a.mu.Unlock()
 }
 
+// allPIDs returns every registered console PID as uint32. Used as the "friend
+// list" for matchmaking: friends-only sessions (participation_policy 98, which
+// Fantasy Life uses) are only browsable when the owner is in the searcher's
+// friend list. The real friend graph lives on Pretendo, not here, so on this
+// small community server we treat every registered account as everyone's friend.
+func (a *accountStore) allPIDs() []uint32 {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	out := make([]uint32, 0, len(a.m))
+	for pid := range a.m {
+		if n, err := strconv.ParseUint(pid, 10, 32); err == nil {
+			out = append(out, uint32(n))
+		}
+	}
+	return out
+}
+
 func (a *accountStore) size() int {
 	a.mu.RLock()
 	defer a.mu.RUnlock()

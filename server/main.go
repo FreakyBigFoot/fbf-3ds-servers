@@ -235,7 +235,8 @@ func startSecureServer(wg *sync.WaitGroup, g *gameServer) {
 	server := nex.NewPRUDPServer()
 	endpoint := nex.NewPRUDPEndPoint(1)
 	endpoint.IsSecureEndPoint = true
-	registerSecureEndpoint(endpoint) // for the /stats online-player count
+	registerSecureEndpoint(g.DisplayName(), g.GameID, endpoint) // per-game dashboard stats
+	installSessionLogging(g.Name, endpoint) // connect/disconnect logging (drop vs clean-leave)
 	endpoint.ServerAccount = secureServerAccount
 	endpoint.AccountDetailsByPID = accountDetailsByPID
 	endpoint.AccountDetailsByUsername = accountDetailsByUsername
@@ -274,7 +275,11 @@ func startSecureServer(wg *sync.WaitGroup, g *gameServer) {
 	// auto-create their schema on registration.
 	if postgres != nil {
 		mm := common_globals.NewMatchmakingManager(endpoint, postgres)
-		mm.GetUserFriendPIDs = func(pid uint32) []uint32 { return []uint32{} }
+		// Friends-only sessions (participation_policy 98, used by Fantasy Life) are
+		// only browsable when the owner is in the searcher's friend list. The real
+		// friend graph is on Pretendo's friends server, which we don't run - so treat
+		// every registered account on this community server as everyone's friend.
+		mm.GetUserFriendPIDs = func(pid uint32) []uint32 { return accounts.allPIDs() }
 
 		nt := nat_traversal.NewProtocol()
 		endpoint.RegisterServiceProtocol(nt)
@@ -297,7 +302,7 @@ func startSecureServer(wg *sync.WaitGroup, g *gameServer) {
 		// through us. With FFE_RELAY unset, behaviour is unchanged (direct P2P).
 		if os.Getenv("FFE_RELAY") == "1" {
 			if relay == nil {
-				relay = newRelayManager(env("FFE_PUBLIC_HOST", "127.0.0.1"))
+				relay = newRelayManager(env("FFE_PUBLIC_HOST", "10.0.0.95"))
 			}
 			mmp.SetHandlerGetSessionURLs(relayGetSessionURLs(mm))
 			nt.SetHandlerRequestProbeInitiationExt(relayRequestProbeInitiationExt)

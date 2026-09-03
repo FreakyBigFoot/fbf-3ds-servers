@@ -69,10 +69,8 @@ func fetchGeo(ip string) {
 // the dashboard map. No IPs or identities are exposed.
 func onlineLocations() []geoPoint {
 	ips := map[string]bool{}
-	secureEndpointsMu.RLock()
-	eps := append([]*nex.PRUDPEndPoint(nil), secureEndpoints...)
-	secureEndpointsMu.RUnlock()
-	for _, ep := range eps {
+	for _, ne := range endpointsSnapshot() {
+		ep := ne.EP
 		if ep == nil || ep.Connections == nil {
 			continue
 		}

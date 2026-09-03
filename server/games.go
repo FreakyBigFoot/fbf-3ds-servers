@@ -75,11 +75,61 @@ func init() {
 		}
 	}
 
+	// Fantasy Life (US, title 0004000000113200, game server 0006D200). Uses
+	// friends-only matchmaking sessions, so allPIDs() treats every registered
+	// account as a friend (see register.go). NEX version tunable via FL_* env.
+	fl := gameServer{
+		Name:               "Fantasy Life",
+		GameID:             "0006D200",
+		AccessKey:          env("FL_ACCESS_KEY", "e91e8828"),
+		AuthPort:           61021,
+		SecurePort:         61022,
+		LibMajor:           3,
+		LibMinor:           5,
+		LibPatch:           0,
+		UseStructureHeader: true,
+	}
+	if v := env("FL_STRUCT_HEADER", ""); v != "" {
+		fl.UseStructureHeader = v == "1"
+	}
+	if mj := env("FL_LIB_MAJOR", ""); mj != "" {
+		if n, e := strconv.Atoi(mj); e == nil {
+			fl.LibMajor = n
+		}
+	}
+	if mn := env("FL_LIB_MINOR", ""); mn != "" {
+		if n, e := strconv.Atoi(mn); e == nil {
+			fl.LibMinor = n
+		}
+	}
+	if pt := env("FL_LIB_PATCH", ""); pt != "" {
+		if n, e := strconv.Atoi(pt); e == nil {
+			fl.LibPatch = n
+		}
+	}
+	if env("FL_LEGACY_SIG", "") == "1" {
+		fl.LegacyConnectionSignature = true
+	}
+
 	games = []gameServer{
 		ffe,
+		fl,
 		// Known-good control: this configuration completed a real handshake.
 		{Name: "Mario Kart 7 (control)", GameID: "00030600", AccessKey: "6181dff1",
 			AuthPort: 61011, SecurePort: 61012, LibMajor: 2, LibMinor: 0, LibPatch: 0, Control: true},
+	}
+}
+
+// DisplayName is the clean, player-facing game name for the dashboard (the
+// internal Name carries variant debug info for FFE).
+func (g *gameServer) DisplayName() string {
+	switch g.GameID {
+	case FFEGameID:
+		return "Final Fantasy Explorers"
+	case "0006D200":
+		return "Fantasy Life"
+	default:
+		return g.Name
 	}
 }
 

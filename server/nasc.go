@@ -211,7 +211,7 @@ func gameLogin(game *gameServer, userID string) url.Values {
 	issuedTokens[hex.EncodeToString(sum[:])] = userID
 	tokenMu.Unlock()
 
-	locator := fmt.Sprintf("%s:%d", env("FFE_PUBLIC_HOST", "127.0.0.1"), game.AuthPort)
+	locator := fmt.Sprintf("%s:%d", env("FFE_PUBLIC_HOST", "10.0.0.95"), game.AuthPort)
 
 	logf("NASC   ISSUED %s token to pid=%s -> %s", game.Name, userID, locator)
 
@@ -367,7 +367,7 @@ var upstreamClient = &http.Client{
 			}
 			var lastErr error
 			for _, ip := range ips {
-				if ip == env("FFE_PUBLIC_HOST", "127.0.0.1") {
+				if ip == env("FFE_PUBLIC_HOST", "10.0.0.95") {
 					continue // never dial ourselves
 				}
 				d := net.Dialer{Timeout: 8 * time.Second}
