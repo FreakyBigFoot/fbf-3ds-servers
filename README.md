@@ -41,12 +41,21 @@ other games.
 
 ## How it works
 
-- FFE Connect reads your *anonymous* Pretendo NEX login (principal ID + NEX password)
-  from the friends module and registers it with the server over HTTPS.
-- It writes a small Luma IPS patch that redirects the friends module's NASC lookup for
-  **Final Fantasy Explorers only** to this server.
-- The server speaks NASC (login → locator/token) and NEX/PRUDP (auth + matchmaking),
-  so consoles find each other and play, just like the original service.
+- The Connect app reads your *anonymous* Pretendo NEX login (principal ID + NEX
+  password) from the friends module and registers it with the server over HTTPS.
+- It writes a small Luma IPS patch that redirects the friends module's NASC lookup —
+  the "where do I log into my game server?" request — to this server. **This redirect
+  is game-agnostic:** *every* game's online login goes to us, not just one.
+- The server then decides **per request, by the game's server ID**: if it's a game we
+  host (Final Fantasy Explorers, Fantasy Life, ...) we answer it ourselves; **anything
+  else we proxy straight to Pretendo**, so every other game — and the friends server
+  itself — keeps working exactly as before. The console is dumb; the routing lives on
+  the server.
+- For the games we host, the server speaks NASC (login -> locator/token) and NEX/PRUDP
+  (auth + matchmaking + a NAT-traversal relay), so consoles find each other and play,
+  just like the original service.
+- **Adding a game is a server-side change** (its access key + endpoint) — no new
+  console patch or app is needed, because the console is already sending us every game.
 
 ## Repository layout
 
