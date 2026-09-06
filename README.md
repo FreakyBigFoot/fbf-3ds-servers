@@ -58,6 +58,16 @@ Here's the key detail that makes it safe and **fully reversible**: Pretendo alre
 3. Launch a hosted game and go online
 4. To go back to plain Pretendo anytime: open the app → **Undo**
 
+## Finding games to join: use the in-game search
+
+To find and join a game hosted here, use the game's own **online search / server browser** in its multiplayer menu. For private rooms, join with the room's **passcode / PIN**.
+
+**What does _not_ work: joining a hosted game through a game's "Friends list" option.** Some games (for example Final Fantasy Explorers) let you drop straight into a friend's session from your friends list. That path won't find games hosted on this server; it shows nobody available.
+
+**Why:** "join via friends list" is driven by the 3DS **friends / presence server**, a system service that is separate from the game server. On this setup that friends server is still **Pretendo's** — friends traffic is passed straight through, so your friends list, everyone's online status, and presence all keep working normally. But a game you host _here_ runs on infrastructure Pretendo's friends server knows nothing about, so that session is never advertised to your friends and the friends-list join comes up empty. Nothing reports "playing on this server" back up to Pretendo.
+
+Closing this gap would mean running our own friends/presence server that the console points at and that knows about sessions hosted here. That's possible but a substantial, separate piece of work, and it isn't part of this project today. **For now, use the in-game search plus a passcode to play with friends.**
+
 ## Repository layout
 
 | Path | What |
