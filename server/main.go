@@ -112,6 +112,22 @@ func env(key, fallback string) string {
 	return fallback
 }
 
+// parseAttrIndices parses a comma-separated list of attribute indices (e.g.
+// "4" or "3,4") into a slice of ints, skipping anything unparseable.
+func parseAttrIndices(s string) []int {
+	var out []int
+	for _, part := range strings.Split(s, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		if n, err := strconv.Atoi(part); err == nil {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
 func envPort(key string, fallback int) int {
 	if n, err := strconv.Atoi(env(key, "")); err == nil {
 		return n
@@ -311,7 +327,19 @@ func startSecureServer(wg *sync.WaitGroup, g *gameServer) {
 
 		mme := matchmake_extension.NewProtocol()
 		endpoint.RegisterServiceProtocol(mme)
-		common_matchmake_extension.NewCommonProtocol(mme).SetManager(mm)
+		cmme := common_matchmake_extension.NewCommonProtocol(mme)
+		cmme.SetManager(mm)
+		// Browse fix (opt-in via FFE_BROWSE_ALL=1). Replaces the stock
+		// BrowseMatchmakeSession handler with one that unhides pin/locked rooms,
+		// returns rooms in a stable de-duplicated order, and never returns more
+		// rooms than the client asked for (over-returning crashes the console).
+		// FFE_BROWSE_WILDCARD_ATTRS overrides which attribute indices get blanked
+		// (comma list, default "4" = the lock flag). See browse_handler.go.
+		if os.Getenv("FFE_BROWSE_ALL") == "1" {
+			wildcardIdx := parseAttrIndices(env("FFE_BROWSE_WILDCARD_ATTRS", "4"))
+			mme.SetHandlerBrowseMatchmakeSession(browseMatchmakeSessionStable(mm, wildcardIdx))
+			logf("BROWSE stable handler installed (wildcard attrs=%v)", wildcardIdx)
+		}
 
 		// Optional transparent P2P relay (opt-in via FFE_RELAY=1). Overrides the
 		// two handlers that hand out peer addresses so both consoles route

@@ -79,11 +79,20 @@ func (b *Buffer) Scan(value any) error {
 		return nil
 	}
 
-	if _, ok := value.([]byte); !ok {
+	src, ok := value.([]byte)
+	if !ok {
 		return fmt.Errorf("cannot scan %T into Buffer", value)
 	}
 
-	*b = Buffer(value.([]byte))
+	// IMPORTANT: copy the bytes. database/sql (and the pq driver) may reuse the
+	// same backing array for each scanned row, so storing the slice by reference
+	// makes every row's Buffer alias the last row's data. This surfaced as a
+	// matchmaking browse bug where two distinct sessions returned identical
+	// ApplicationBuffers (both showing whichever row was scanned last), so the
+	// game rendered "the same room twice". Copying gives each row its own bytes.
+	dst := make([]byte, len(src))
+	copy(dst, src)
+	*b = Buffer(dst)
 
 	return nil
 }
