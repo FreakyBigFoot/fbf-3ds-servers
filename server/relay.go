@@ -17,6 +17,7 @@ import (
 
 type relayLink struct {
 	pidA, pidB   uint64
+	host         string       // relay IP this link presents to BOTH peers (distinct-IP mode)
 	sockA, sockB *net.UDPConn // sockA: B sends here to reach A. sockB: A sends here to reach B.
 	portA, portB int
 	addrA, addrB atomic.Pointer[net.UDPAddr]
@@ -24,12 +25,24 @@ type relayLink struct {
 
 type relayManager struct {
 	publicHost string
+	hosts      []string // pool of relay IPs; empty => single publicHost on 0.0.0.0
+	hostSeq    int      // round-robin cursor (guarded by mu)
 	mu         sync.Mutex
 	links      map[string]*relayLink
 }
 
 func newRelayManager(publicHost string) *relayManager {
 	return &relayManager{publicHost: publicHost, links: map[string]*relayLink{}}
+}
+
+// setHosts enables distinct-IP mode: each peer link is bound to its own IP from
+// the pool, so a console sees every peer at a DIFFERENT address (not just a
+// different port). This works around the 3DS collapsing multiple peers that
+// share one IP. Empty pool => legacy single-IP behaviour.
+func (rm *relayManager) setHosts(hosts []string) {
+	rm.mu.Lock()
+	defer rm.mu.Unlock()
+	rm.hosts = hosts
 }
 
 func pairKey(a, b uint64) string {
@@ -39,8 +52,17 @@ func pairKey(a, b uint64) string {
 	return fmt.Sprintf("%d-%d", a, b)
 }
 
-func openUDP() (*net.UDPConn, int, error) {
-	c, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
+// openUDP binds an ephemeral UDP socket. When ip is non-empty the socket is
+// bound to that specific local IP, so packets it sends carry that IP as source
+// and the console sees the peer at that address.
+func openUDP(ip string) (*net.UDPConn, int, error) {
+	bindIP := net.IPv4zero
+	if ip != "" {
+		if p := net.ParseIP(ip); p != nil {
+			bindIP = p
+		}
+	}
+	c, err := net.ListenUDP("udp4", &net.UDPAddr{IP: bindIP, Port: 0})
 	if err != nil {
 		return nil, 0, err
 	}
@@ -54,36 +76,36 @@ func (rm *relayManager) link(pidA, pidB uint64) (*relayLink, error) {
 	if l, ok := rm.links[key]; ok {
 		return l, nil
 	}
-	sa, pa, err := openUDP()
+	// Distinct-IP mode: give this link its own IP from the pool, round-robin.
+	// Both sockets of the link bind to that IP so both peers see each other at
+	// it. With one link per participant-pair and a pool >= (players-1), every
+	// peer a console talks to lands on a different IP.
+	host := ""
+	if len(rm.hosts) > 0 {
+		host = rm.hosts[rm.hostSeq%len(rm.hosts)]
+		rm.hostSeq++
+	}
+	sa, pa, err := openUDP(host)
 	if err != nil {
 		return nil, err
 	}
-	sb, pb, err := openUDP()
+	sb, pb, err := openUDP(host)
 	if err != nil {
 		sa.Close()
 		return nil, err
 	}
-	l := &relayLink{pidA: pidA, pidB: pidB, sockA: sa, sockB: sb, portA: pa, portB: pb}
+	linkHost := host
+	if linkHost == "" {
+		linkHost = rm.publicHost
+	}
+	l := &relayLink{pidA: pidA, pidB: pidB, host: linkHost, sockA: sa, sockB: sb, portA: pa, portB: pb}
 	rm.links[key] = l
 	// A sends to sockB (portB) -> forward to B via sockA
 	go l.pump(l.sockB, l.sockA, &l.addrA, &l.addrB)
 	// B sends to sockA (portA) -> forward to A via sockB
 	go l.pump(l.sockA, l.sockB, &l.addrB, &l.addrA)
-	logf("RELAY  link %s: reach-%d via udp/%d, reach-%d via udp/%d", key, pidA, pa, pidB, pb)
+	logf("RELAY  link %s on %s: reach-%d via udp/%d, reach-%d via udp/%d", key, linkHost, pidA, pa, pidB, pb)
 	return l, nil
-}
-
-// linkForPID returns an existing link that involves pid (for the 2-player case
-// where only one participant is known).
-func (rm *relayManager) linkForPID(pid uint64) *relayLink {
-	rm.mu.Lock()
-	defer rm.mu.Unlock()
-	for _, l := range rm.links {
-		if l.pidA == pid || l.pidB == pid {
-			return l
-		}
-	}
-	return nil
 }
 
 func (l *relayLink) pump(in, out *net.UDPConn, srcAddr, dstAddr *atomic.Pointer[net.UDPAddr]) {

@@ -1,6 +1,8 @@
 package main
 
 import (
+	"strconv"
+
 	"github.com/PretendoNetwork/nex-go/v2"
 	"github.com/PretendoNetwork/nex-go/v2/constants"
 	"github.com/PretendoNetwork/nex-go/v2/types"
@@ -21,7 +23,7 @@ func relayGetSessionURLs(mm *common_globals.MatchmakingManager) func(error, nex.
 		}
 
 		mm.Mutex.RLock()
-		gathering, _, _, _, nexErr := mm_database.FindGatheringByID(mm, uint32(gid))
+		gathering, _, participants, _, nexErr := mm_database.FindGatheringByID(mm, uint32(gid))
 		if nexErr != nil {
 			mm.Mutex.RUnlock()
 			return nil, nexErr
@@ -30,18 +32,22 @@ func relayGetSessionURLs(mm *common_globals.MatchmakingManager) func(error, nex.
 		endpoint := connection.Endpoint().(*nex.PRUDPEndPoint)
 		callerPID := uint64(connection.PID())
 		hostPID := uint64(gathering.HostPID)
-		host := endpoint.FindConnectionByPID(hostPID)
+		peers := append([]uint64(nil), participants...)
 		mm.Mutex.RUnlock()
 
+		_ = peers
 		stream := nex.NewByteStreamOut(endpoint.LibraryVersions(), endpoint.ByteStreamSettings())
 		urls := types.NewList[types.StationURL]()
 
+		// GetSessionURLs must return ONLY the host: the game treats these as "the
+		// session" and a second URL breaks it. Rewrite the host to the relay.
+		host := endpoint.FindConnectionByPID(hostPID)
 		if host != nil {
 			link, lerr := relay.link(hostPID, callerPID)
 			for _, u := range host.StationURLs {
 				ru := u.Copy().(types.StationURL)
 				if lerr == nil {
-					ru.SetAddress(relay.publicHost)
+					ru.SetAddress(link.host)
 					ru.SetPortNumber(link.endpointFor(hostPID))
 				}
 				urls = append(urls, ru)
@@ -59,49 +65,68 @@ func relayGetSessionURLs(mm *common_globals.MatchmakingManager) func(error, nex.
 	}
 }
 
-// relayRequestProbeInitiationExt rewrites the caller's own station (the address
-// peers are told to probe) to the relay endpoint, then forwards InitiateProbe to
-// each target - so peers probe the relay instead of the caller directly.
-func relayRequestProbeInitiationExt(err error, packet nex.PacketInterface, callID uint32, targetList types.List[types.String], stationToProbe types.String) (*nex.RMCMessage, *nex.Error) {
-	if err != nil {
-		return nil, nex.NewError(nex.ResultCodes.Core.InvalidArgument, "change_error")
-	}
+// relayRequestProbeInitiationExt rewrites the caller's own station to the relay
+// endpoint ONLY for the host<->joiner link, and forwards InitiateProbe to each
+// target. Joiner<->joiner pairs are passed through UNTOUCHED so they connect
+// directly. Reason: we can only rewrite one side of a pair (the other side uses
+// the address it learned over the Pia mesh, which we can't see), so relaying a
+// joiner<->joiner pair guarantees an address MISMATCH that breaks the hole-punch.
+// host<->joiner is safe because the joiner also gets the host's relay address
+// from GetSessionURLs, so both ends agree on the relay.
+func relayRequestProbeInitiationExt(mm *common_globals.MatchmakingManager) func(error, nex.PacketInterface, uint32, types.List[types.String], types.String) (*nex.RMCMessage, *nex.Error) {
+	return func(err error, packet nex.PacketInterface, callID uint32, targetList types.List[types.String], stationToProbe types.String) (*nex.RMCMessage, *nex.Error) {
+		if err != nil {
+			return nil, nex.NewError(nex.ResultCodes.Core.InvalidArgument, "change_error")
+		}
 
-	connection := packet.Sender().(*nex.PRUDPConnection)
-	endpoint := connection.Endpoint().(*nex.PRUDPEndPoint)
-	server := endpoint.Server
-	callerPID := uint64(connection.PID())
+		connection := packet.Sender().(*nex.PRUDPConnection)
+		endpoint := connection.Endpoint().(*nex.PRUDPEndPoint)
+		server := endpoint.Server
+		callerPID := uint64(connection.PID())
+		hostPID := gatheringHostForPID(mm, callerPID)
 
-	if link := relay.linkForPID(callerPID); link != nil {
-		st := types.NewStationURL(stationToProbe)
-		st.SetAddress(relay.publicHost)
-		st.SetPortNumber(link.endpointFor(callerPID))
-		stationToProbe = types.String(st.URL())
-		logf("RELAY  ProbeInit: caller %d station -> relay", callerPID)
-	}
+		resp := nex.NewRMCSuccess(endpoint, nil)
+		resp.ProtocolID = nat_traversal.ProtocolID
+		resp.MethodID = nat_traversal.MethodRequestProbeInitiationExt
+		resp.CallID = callID
 
-	resp := nex.NewRMCSuccess(endpoint, nil)
-	resp.ProtocolID = nat_traversal.ProtocolID
-	resp.MethodID = nat_traversal.MethodRequestProbeInitiationExt
-	resp.CallID = callID
-
-	reqStream := nex.NewByteStreamOut(endpoint.LibraryVersions(), endpoint.ByteStreamSettings())
-	stationToProbe.WriteTo(reqStream)
-
-	rmcRequest := nex.NewRMCRequest(endpoint)
-	rmcRequest.ProtocolID = nat_traversal.ProtocolID
-	rmcRequest.CallID = 0xFFFF0000 + callID
-	rmcRequest.MethodID = nat_traversal.MethodInitiateProbe
-	rmcRequest.Parameters = reqStream.Bytes()
-	rmcRequestBytes := rmcRequest.Bytes()
-
-	for _, target := range targetList {
-		targetStation := types.NewStationURL(target)
-		if connectionID, ok := targetStation.RVConnectionID(); ok {
+		for _, target := range targetList {
+			targetStation := types.NewStationURL(target)
+			connectionID, ok := targetStation.RVConnectionID()
+			if !ok {
+				continue
+			}
 			t := endpoint.FindConnectionByID(connectionID)
 			if t == nil {
 				continue
 			}
+			targetPID := uint64(t.PID())
+
+			// Only relay the HOST link. Leave joiner<->joiner untouched (direct).
+			isHostLink := hostPID != 0 && (callerPID == hostPID || targetPID == hostPID)
+			perTargetStation := stationToProbe
+			if isHostLink {
+				if link, lerr := relay.link(callerPID, targetPID); lerr == nil {
+					st := types.NewStationURL(stationToProbe)
+					st.SetAddress(link.host)
+					st.SetPortNumber(link.endpointFor(callerPID))
+					perTargetStation = types.String(st.URL())
+					logf("RELAY  ProbeInit: caller %d -> host-link target %d via relay", callerPID, targetPID)
+				}
+			} else {
+				logf("RELAY  ProbeInit: caller %d -> target %d DIRECT (joiner<->joiner, host=%d)", callerPID, targetPID, hostPID)
+			}
+
+			reqStream := nex.NewByteStreamOut(endpoint.LibraryVersions(), endpoint.ByteStreamSettings())
+			perTargetStation.WriteTo(reqStream)
+
+			rmcRequest := nex.NewRMCRequest(endpoint)
+			rmcRequest.ProtocolID = nat_traversal.ProtocolID
+			rmcRequest.CallID = 0xFFFF0000 + callID
+			rmcRequest.MethodID = nat_traversal.MethodInitiateProbe
+			rmcRequest.Parameters = reqStream.Bytes()
+			rmcRequestBytes := rmcRequest.Bytes()
+
 			var mp nex.PRUDPPacketInterface
 			switch t.DefaultPRUDPVersion {
 			case 0:
@@ -121,7 +146,27 @@ func relayRequestProbeInitiationExt(err error, packet nex.PacketInterface, callI
 			mp.SetPayload(rmcRequestBytes)
 			server.Send(mp)
 		}
-	}
 
-	return resp, nil
+		return resp, nil
+	}
+}
+
+// gatheringHostForPID returns the host PID of the (most recent) gathering that
+// pid participates in, or 0 if none / unknown. Used to decide which probe pairs
+// are host-links (relay) versus joiner<->joiner (leave direct).
+func gatheringHostForPID(mm *common_globals.MatchmakingManager, pid uint64) uint64 {
+	if mm == nil || mm.Database == nil {
+		return 0
+	}
+	var hostText string
+	err := mm.Database.QueryRow(
+		`SELECT host_pid::text FROM matchmaking.gatherings
+		 WHERE $1::numeric = ANY(participants) ORDER BY id DESC LIMIT 1`,
+		strconv.FormatUint(pid, 10),
+	).Scan(&hostText)
+	if err != nil {
+		return 0
+	}
+	h, _ := strconv.ParseUint(hostText, 10, 64)
+	return h
 }

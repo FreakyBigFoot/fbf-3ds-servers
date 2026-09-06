@@ -13,6 +13,7 @@ package main
 import (
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/PretendoNetwork/nex-go/v2"
@@ -283,7 +284,22 @@ func startSecureServer(wg *sync.WaitGroup, g *gameServer) {
 
 		nt := nat_traversal.NewProtocol()
 		endpoint.RegisterServiceProtocol(nt)
-		common_nat_traversal.NewCommonProtocol(nt)
+		cnt := common_nat_traversal.NewCommonProtocol(nt)
+		// Diagnostics: log what each console reports about P2P establishment.
+		// result=TRUE  => the console says NAT traversal to that peer SUCCEEDED
+		// result=FALSE => it FAILED. cid is the peer's connection id.
+		cnt.OnAfterReportNATTraversalResult = func(packet nex.PacketInterface, cid types.UInt32, result types.Bool, rtt types.UInt32) {
+			reporter := uint64(packet.Sender().(*nex.PRUDPConnection).PID())
+			logf("NATRES reporter=%d peer_cid=%d result=%v rtt=%d", reporter, uint32(cid), bool(result), uint32(rtt))
+		}
+		cnt.OnAfterReportNATTraversalResultDetail = func(packet nex.PacketInterface, cid types.UInt32, result types.Bool, detail types.Int32, rtt types.UInt32) {
+			reporter := uint64(packet.Sender().(*nex.PRUDPConnection).PID())
+			logf("NATRESD reporter=%d peer_cid=%d result=%v detail=%d rtt=%d", reporter, uint32(cid), bool(result), int32(detail), uint32(rtt))
+		}
+		cnt.OnAfterRequestProbeInitiationExt = func(packet nex.PacketInterface, targetList types.List[types.String], stationToProbe types.String) {
+			caller := uint64(packet.Sender().(*nex.PRUDPConnection).PID())
+			logf("PROBEREQ caller=%d targets=%d station=%q", caller, len(targetList), string(stationToProbe))
+		}
 
 		mmp := match_making.NewProtocol()
 		endpoint.RegisterServiceProtocol(mmp)
@@ -304,8 +320,22 @@ func startSecureServer(wg *sync.WaitGroup, g *gameServer) {
 			if relay == nil {
 				relay = newRelayManager(env("FFE_PUBLIC_HOST", "10.0.0.95"))
 			}
+			// Distinct-IP mode: FFE_RELAY_IPS="ip1,ip2,ip3" gives each peer link
+			// its own IP so a console sees every peer at a different address
+			// (the 3DS collapses multiple peers sharing one IP). Unset => legacy
+			// single-IP behaviour.
+			if raw := os.Getenv("FFE_RELAY_IPS"); raw != "" {
+				var ips []string
+				for _, p := range strings.Split(raw, ",") {
+					if p = strings.TrimSpace(p); p != "" {
+						ips = append(ips, p)
+					}
+				}
+				relay.setHosts(ips)
+				logf("SECURE %s RELAY distinct-IP pool: %v", g.Name, ips)
+			}
 			mmp.SetHandlerGetSessionURLs(relayGetSessionURLs(mm))
-			nt.SetHandlerRequestProbeInitiationExt(relayRequestProbeInitiationExt)
+			nt.SetHandlerRequestProbeInitiationExt(relayRequestProbeInitiationExt(mm))
 			logf("SECURE %s TRANSPARENT RELAY enabled (public host %s)", g.Name, relay.publicHost)
 		}
 
