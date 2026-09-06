@@ -69,6 +69,11 @@ func (pep *PRUDPEndPoint) OnDisconnect(handler func(packet PacketInterface)) {
 	pep.on("disconnect", handler)
 }
 
+// OnConnect adds an event handler which is fired when a connection completes the CONNECT handshake.
+func (pep *PRUDPEndPoint) OnConnect(handler func(packet PacketInterface)) {
+	pep.on("connect", handler)
+}
+
 // OnConnectionEnded adds an event handler which is fired when a connection is removed from the server
 //
 // Fires both on a natural disconnect and from a timeout
