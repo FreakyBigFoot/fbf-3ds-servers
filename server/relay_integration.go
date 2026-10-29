@@ -1,7 +1,9 @@
 package main
 
 import (
+	"os"
 	"strconv"
+	"strings"
 
 	"github.com/PretendoNetwork/nex-go/v2"
 	"github.com/PretendoNetwork/nex-go/v2/constants"
@@ -43,16 +45,39 @@ func relayGetSessionURLs(mm *common_globals.MatchmakingManager) func(error, nex.
 		// session" and a second URL breaks it. Rewrite the host to the relay.
 		host := endpoint.FindConnectionByPID(hostPID)
 		if host != nil {
-			link, lerr := relay.link(hostPID, callerPID)
-			for _, u := range host.StationURLs {
-				ru := u.Copy().(types.StationURL)
-				if lerr == nil {
-					ru.SetAddress(link.host)
-					ru.SetPortNumber(link.endpointFor(hostPID))
+			if canDirect(hostPID) && canDirect(callerPID) {
+				// HYBRID: both ends can hole-punch directly — hand the joiner the
+				// host's REAL station URLs so it connects directly (low latency).
+				for _, u := range host.StationURLs {
+					urls = append(urls, u.Copy().(types.StationURL))
 				}
-				urls = append(urls, ru)
+				logf("HYBRID GetSessionURLs: joiner %d -> host %d DIRECT (both EIM)", callerPID, hostPID)
+			} else if v2Enabled(hostPID) {
+				// Relay v2: host.StationURLs were already rewritten to the host's
+				// relay identity at registration, so just return them as-is. Fall
+				// back to portFor if for any reason they weren't.
+				port := relay2.portFor(hostPID)
+				for _, u := range host.StationURLs {
+					ru := u.Copy().(types.StationURL)
+					if port != 0 {
+						ru.SetAddress(relay2.publicHost)
+						ru.SetPortNumber(port)
+					}
+					urls = append(urls, ru)
+				}
+				logf("RELAY2 GetSessionURLs: joiner %d -> host %d at identity %s:%d", callerPID, hostPID, relay2.publicHost, port)
+			} else {
+				link, lerr := relay.link(hostPID, callerPID)
+				for _, u := range host.StationURLs {
+					ru := u.Copy().(types.StationURL)
+					if lerr == nil {
+						ru.SetAddress(link.host)
+						ru.SetPortNumber(link.endpointFor(hostPID))
+					}
+					urls = append(urls, ru)
+				}
+				logf("RELAY  GetSessionURLs: joiner %d -> host %d via relay", callerPID, hostPID)
 			}
-			logf("RELAY  GetSessionURLs: joiner %d -> host %d via relay", callerPID, hostPID)
 		}
 
 		urls.WriteTo(stream)
@@ -85,6 +110,19 @@ func relayRequestProbeInitiationExt(mm *common_globals.MatchmakingManager) func(
 		callerPID := uint64(connection.PID())
 		hostPID := gatheringHostForPID(mm, callerPID)
 
+		// Relay v2: the caller has ONE identity (relayIP, P_caller) that every
+		// target — host or joiner — probes. Same address from every vantage
+		// point, so the host's observed/distributed address is valid for all.
+		useV2 := v2Enabled(callerPID)
+		var callerIdentityPort uint16
+		if useV2 {
+			callerIdentityPort = relay2.portFor(callerPID)
+			if callerIdentityPort == 0 {
+				useV2 = false // no identity yet: degrade to v1 rather than break the join
+				logf("RELAY2: no identity for caller %d, falling back to v1 for this probe", callerPID)
+			}
+		}
+
 		resp := nex.NewRMCSuccess(endpoint, nil)
 		resp.ProtocolID = nat_traversal.ProtocolID
 		resp.MethodID = nat_traversal.MethodRequestProbeInitiationExt
@@ -102,16 +140,42 @@ func relayRequestProbeInitiationExt(mm *common_globals.MatchmakingManager) func(
 			}
 			targetPID := uint64(t.PID())
 
-			// Only relay the HOST link. Leave joiner<->joiner untouched (direct).
+			// Relay the HOST link always. Joiner<->joiner is normally left DIRECT
+			// (a direct hole-punch), which works on friendly NATs but FAILS when a
+			// joiner is behind cellular CGNAT / symmetric NAT. FFE_RELAY_JOINERS=1
+			// (gated to FFE_RELAY_JOINER_PIDS) also routes joiner<->joiner through
+			// the relay, so no console needs a direct peer connection. EXPERIMENT:
+			// if both joiners honor the relay address we hand them here, this fixes
+			// 3-player across any NAT; if one side instead uses the peer address it
+			// learned via the Pia mesh, we'll see the mismatch and know we must also
+			// rewrite the mesh handoff.
 			isHostLink := hostPID != 0 && (callerPID == hostPID || targetPID == hostPID)
+			relayPair := isHostLink || relayJoinerPair(callerPID, targetPID)
 			perTargetStation := stationToProbe
-			if isHostLink {
+			// HYBRID: probe directly only when BOTH ends can hole-punch (EIM);
+			// otherwise the link stays on the relay.
+			direct := canDirect(callerPID) && canDirect(targetPID)
+			if direct {
+				// Leave perTargetStation as the target's real address — direct.
+				logf("HYBRID ProbeInit: caller %d -> target %d DIRECT (both EIM)", callerPID, targetPID)
+			} else if useV2 {
+				// v2: every target probes the caller at the caller's single identity.
+				st := types.NewStationURL(stationToProbe)
+				st.SetAddress(relay2.publicHost)
+				st.SetPortNumber(callerIdentityPort)
+				perTargetStation = types.String(st.URL())
+				logf("RELAY2 ProbeInit: caller %d -> target %d at caller identity %s:%d", callerPID, targetPID, relay2.publicHost, callerIdentityPort)
+			} else if relayPair {
 				if link, lerr := relay.link(callerPID, targetPID); lerr == nil {
 					st := types.NewStationURL(stationToProbe)
 					st.SetAddress(link.host)
 					st.SetPortNumber(link.endpointFor(callerPID))
 					perTargetStation = types.String(st.URL())
-					logf("RELAY  ProbeInit: caller %d -> host-link target %d via relay", callerPID, targetPID)
+					kind := "host-link"
+					if !isHostLink {
+						kind = "JOINER<->JOINER"
+					}
+					logf("RELAY  ProbeInit: caller %d -> %s target %d via relay", callerPID, kind, targetPID)
 				}
 			} else {
 				logf("RELAY  ProbeInit: caller %d -> target %d DIRECT (joiner<->joiner, host=%d)", callerPID, targetPID, hostPID)
@@ -149,6 +213,31 @@ func relayRequestProbeInitiationExt(mm *common_globals.MatchmakingManager) func(
 
 		return resp, nil
 	}
+}
+
+// relayJoinerPair reports whether a joiner<->joiner probe pair should be routed
+// through the relay (experimental). Requires FFE_RELAY_JOINERS=1, and if
+// FFE_RELAY_JOINER_PIDS is set (comma list), BOTH consoles must be allowlisted
+// so real players keep the stock direct behaviour untouched.
+func relayJoinerPair(a, b uint64) bool {
+	if os.Getenv("FFE_RELAY_JOINERS") != "1" {
+		return false
+	}
+	allow := os.Getenv("FFE_RELAY_JOINER_PIDS")
+	if allow == "" {
+		return true
+	}
+	return pidInCSV(a, allow) && pidInCSV(b, allow)
+}
+
+func pidInCSV(pid uint64, csv string) bool {
+	want := strconv.FormatUint(pid, 10)
+	for _, p := range strings.Split(csv, ",") {
+		if strings.TrimSpace(p) == want {
+			return true
+		}
+	}
+	return false
 }
 
 // gatheringHostForPID returns the host PID of the (most recent) gathering that

@@ -98,7 +98,12 @@ makerom -f cia -o FreakyBigFootServers.cia -target t -exefslogo \
 
 ## Self-hosting your own server
 
-Point the app at your own host by editing `SERVER_HOST` / `SERVER_IP` in `patcher/source/main.c`, set `FFE_PUBLIC_HOST` / `FFE_SECURE_HOST` in your `run.sh`, and add the games you want to host to `server/games.go`.
+1. Point the app at your host: edit `SERVER_HOST` / `SERVER_IP` in `patcher/source/main.c`, and the hostname inside `friends_patch_ips` in `patcher/source/friends_patch.h` (the field is 38 bytes; pad with `00`). Rebuild the app.
+2. Copy `server/run.sh.example` to `server/run.sh` and fill it in. Use your public IPv4 for `FFE_PUBLIC_HOST` / `FFE_SECURE_HOST` (a hostname is resolved once at startup). Keep the relay lines on.
+3. Open UDP 61001-61002 (FF Explorers), 61021-61022 (Fantasy Life) and TCP 443/80 to the server. The relay also binds random UDP ports from the OS ephemeral range; pin that range (`net.ipv4.ip_local_port_range = 49152 60999`) and forward it too, or joins fail for anyone behind NAT.
+4. Add further games to `server/games.go`.
+
+If room creation fails, check the `DIALECT FF Explorers ...` startup line: it must say `nex lib 3.5.0, struct header off, kerberos ticket v1, matchmaking lib 3.3.0` (the defaults). A `WARNING` is printed if an `FFE_*` override changes that.
 
 ## License & credits
 

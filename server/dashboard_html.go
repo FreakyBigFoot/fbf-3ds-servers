@@ -14,6 +14,7 @@ const dashboardHTML = `<!doctype html>
     --violet:#9d7bff; --glow:rgba(95,224,255,.4); --good:#8affc0;
   }
   *{box-sizing:border-box}
+  [hidden]{display:none!important}
   body{
     margin:0; min-height:100vh; font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
     color:var(--text); overflow-x:hidden;
@@ -31,7 +32,7 @@ const dashboardHTML = `<!doctype html>
   h1{margin:.3em 0 .12em; font-size:clamp(28px,5.5vw,44px); font-weight:800; letter-spacing:-.01em; text-wrap:balance;
      background:linear-gradient(120deg,#fff,var(--crystal2) 60%,var(--violet)); -webkit-background-clip:text; background-clip:text; color:transparent}
   .sub{color:var(--muted); font-size:15px}
-  .grid{display:grid; grid-template-columns:repeat(3,1fr); gap:18px}
+  .grid{display:grid; grid-template-columns:repeat(2,1fr); gap:18px}
   @media(max-width:560px){.grid{grid-template-columns:1fr}}
   .card{
     position:relative; padding:26px 18px 22px; text-align:center;
@@ -47,6 +48,12 @@ const dashboardHTML = `<!doctype html>
   .num.bump{transform:scale(1.14)}
   .label{margin-top:12px; font-size:12px; letter-spacing:.16em; text-transform:uppercase; color:var(--muted)}
   .online .num{color:var(--good); text-shadow:0 0 26px rgba(138,255,192,.45)}
+  .maint{margin:0 0 18px; padding:14px 18px; border-radius:12px; border:1px solid rgba(255,196,90,.55);
+    background:rgba(255,196,90,.10); color:#ffd27a; font-weight:600; line-height:1.4;
+    box-shadow:0 0 22px rgba(255,196,90,.18); display:flex; gap:12px; align-items:center}
+  .maint .mdot{width:10px; height:10px; border-radius:50%; background:#ffc45a; box-shadow:0 0 12px #ffc45a; flex:none;
+    animation:mpulse 1.4s ease-in-out infinite}
+  @keyframes mpulse{0%,100%{opacity:1}50%{opacity:.35}}
 
   .panel{margin-top:22px; position:relative; border:1px solid var(--line); border-radius:14px; overflow:hidden;
     background:linear-gradient(180deg, rgba(12,33,53,.7), rgba(7,20,34,.8)); backdrop-filter:blur(4px)}
@@ -88,6 +95,18 @@ const dashboardHTML = `<!doctype html>
   .howto-links{padding:4px 18px 18px; text-align:center}
   a.ghlink{color:var(--crystal2); text-decoration:none; font-weight:600; border-bottom:1px solid rgba(95,224,255,.35); transition:color .15s, border-color .15s}
   a.ghlink:hover{color:#fff; border-bottom-color:var(--crystal)}
+  .release .rn{padding:4px 18px 18px}
+  .rn-date{font-size:11px; letter-spacing:.14em; text-transform:uppercase; color:var(--violet); font-weight:700}
+  .rn-title{font-size:16px; font-weight:800; color:var(--crystal2); margin:6px 0 8px}
+  .rn ul{margin:0; padding-left:18px; color:var(--text); line-height:1.55; font-size:14px}
+  .rn li{margin:5px 0}
+  .rn li b{color:var(--crystal2)}
+  .rn a{color:var(--crystal); text-decoration:none; border-bottom:1px solid rgba(95,224,255,.4)}
+  .rn a:hover{color:#fff; border-bottom-color:var(--crystal)}
+  .discord-btn{display:inline-flex; align-items:center; gap:8px; margin-top:14px; padding:9px 16px; border-radius:10px;
+    background:linear-gradient(135deg,#5865F2,#7b5bff); color:#fff; font-weight:700; font-size:13.5px; text-decoration:none;
+    box-shadow:0 0 18px rgba(88,101,242,.38); transition:filter .15s}
+  .discord-btn:hover{filter:brightness(1.12)}
   .foot a.ghlink{font-size:13px; border:none; color:var(--muted); font-weight:500}
   .foot a.ghlink:hover{color:var(--crystal2)}
   .foot .sep{opacity:.4}
@@ -125,10 +144,11 @@ const dashboardHTML = `<!doctype html>
       <div class="sub">Self-hosted online play for the Nintendo 3DS.</div>
     </header>
 
+    <div class="maint" id="maint" hidden><span class="mdot"></span><span id="maintmsg"></span></div>
+
     <div class="grid">
       <div class="card online"><div class="num" id="online">&mdash;</div><div class="label">Online Now</div></div>
       <div class="card"><div class="num" id="rooms">&mdash;</div><div class="label">Active Rooms</div></div>
-      <div class="card"><div class="num" id="registered">&mdash;</div><div class="label">Players</div></div>
     </div>
 
         <div class="panel">
@@ -153,18 +173,8 @@ const dashboardHTML = `<!doctype html>
       <div class="metric netcard"><div class="mlabel">Network</div><svg class="spark" id="netspark" viewBox="0 0 100 30" preserveAspectRatio="none"><polygon class="sparkfill" id="netfill" points=""/><polyline class="sparkline" id="netline" points=""/></svg></div>
     </div>
 
-    <div class="panel howto">
-      <h2>How to get online</h2>
-      <p class="howto-intro">Already have a modded 3DS on Pretendo? Three steps:</p>
-      <div class="steps">
-        <div class="step"><div class="n">1</div><div class="t">Get the <b>Connect</b> app from <a class="ghlink" href="https://github.com/FreakyBigFoot/fbf-3ds-servers/releases" target="_blank" rel="noopener">GitHub</a> and install it</div></div>
-        <div class="step"><div class="n">2</div><div class="t">Open it, tap <b>Connect</b>, let it reboot</div></div>
-        <div class="step"><div class="n">3</div><div class="t">Launch your game and go online</div></div>
-      </div>
-      <div class="note">Every other Pretendo game keeps working. Tap <b>Undo</b> anytime to switch back to plain Pretendo.</div>
-    </div>
 
-    <div class="foot"><span class="sdot" id="sdot"></span><span id="status">connecting&hellip;</span><span class="sep">&middot;</span><a class="ghlink" href="https://github.com/FreakyBigFoot/fbf-3ds-servers" target="_blank" rel="noopener">GitHub</a></div>
+    <div class="foot"><span class="sdot" id="sdot"></span><span id="status">connecting&hellip;</span><span class="sep">&middot;</span><a class="ghlink" href="https://github.com/FreakyBigFoot/fbf-3ds-servers" target="_blank" rel="noopener">GitHub</a><span class="sep">&middot;</span><a class="ghlink" href="https://discord.gg/qTvW3X2Bq" target="_blank" rel="noopener">Discord</a></div>
   </div>
 
 <script>
@@ -203,7 +213,9 @@ const dashboardHTML = `<!doctype html>
   async function tick(){
     try{
       const s=await (await fetch('/stats',{cache:'no-store'})).json();
-      set($('online'),s.online); set($('rooms'),s.rooms); set($('registered'),s.registered);
+      if(s.maintenance){ $('maintmsg').textContent=s.maintenance_msg||'Servers are under maintenance and may restart.'; $('maint').hidden=false; }
+      else { $('maint').hidden=true; }
+      set($('online'),s.online); set($('rooms'),s.rooms);
       renderGames(s.games);
       set($('cpuv'), Math.round(s.cpu)+'%'); bar($('cpubar'), s.cpu);
       const memPct = s.mem_total? (s.mem_used/s.mem_total*100):0;

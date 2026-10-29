@@ -249,6 +249,16 @@ func (ps *PRUDPServer) handleSocketMessage(packetData []byte, address net.Addr, 
 }
 
 func (ps *PRUDPServer) processPacket(packet PRUDPPacketInterface, address net.Addr, webSocketConnection *gws.Conn) {
+	// Defensive: never let one malformed/unsupported packet crash the whole
+	// process. A panic in packet handling (e.g. a wrong NEX library version in
+	// handleConnect producing a negative slice bound) previously took down every
+	// endpoint at once, including the live game server. Recover, log, drop it.
+	defer func() {
+		if r := recover(); r != nil {
+			logger.Errorf("recovered from panic processing packet from %s: %v", address.String(), r)
+		}
+	}()
+
 	if !ps.Endpoints.Has(packet.DestinationVirtualPortStreamID()) {
 		logger.Warningf("Client %s trying to connect to unbound PRUDPEndPoint %d", address.String(), packet.DestinationVirtualPortStreamID())
 		return

@@ -32,8 +32,8 @@ include $(DEVKITARM)/3ds_rules
 #     - <libctru folder>/default_icon.png
 #---------------------------------------------------------------------------------
 TARGET		:=	FFEConnect
-APP_TITLE	:=	FFE Connect
-APP_DESCRIPTION	:=	Hosted by freakybigfoot
+APP_TITLE	:=	FreakyBigFoot's Community Servers
+APP_DESCRIPTION	:=	Online play for the community game servers
 APP_AUTHOR	:=	freakybigfoot
 BUILD		:=	build
 SOURCES		:=	source

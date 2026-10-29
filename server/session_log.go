@@ -8,8 +8,10 @@ import (
 	nex "github.com/PretendoNetwork/nex-go/v2"
 )
 
-// Session logging: record every secure-endpoint connect/disconnect so we can tell
-// a clean "player left" from a silent network/NAT drop (no DISCONNECT packet).
+// Session logging: record every secure-endpoint connect/disconnect. FF Explorers
+// never sends an explicit DISCONNECT packet, so "ENDED" covers both a normal quit
+// and a network drop; the RMC traffic just before it tells them apart
+// (EndParticipation = the player left).
 // Keyed by remote address, which is stable for the life of a PRUDP session and
 // present on both the connect packet and the ended connection.
 var (
@@ -60,7 +62,7 @@ func installSessionLogging(name string, ep *nex.PRUDPEndPoint) {
 		if ok {
 			dur = time.Since(start).Round(time.Second).String()
 		}
-		reason := "DROPPED (no disconnect packet - network/NAT timeout)"
+		reason := "ENDED (silence timeout, no DISCONNECT packet)"
 		if explicit {
 			reason = "client left (clean disconnect)"
 		}

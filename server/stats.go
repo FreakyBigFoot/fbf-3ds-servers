@@ -3,6 +3,8 @@ package main
 import (
 	"encoding/json"
 	"net/http"
+	"os"
+	"strings"
 	"sync"
 
 	nex "github.com/PretendoNetwork/nex-go/v2"
@@ -104,15 +106,41 @@ type gameStat struct {
 }
 
 type statsResponse struct {
-	Online     int        `json:"online"`
-	Rooms      int        `json:"rooms"`
-	Registered int        `json:"registered"`
-	Games      []gameStat `json:"games"`
-	CPU        float64    `json:"cpu"`
-	MemUsed    int        `json:"mem_used"`
-	MemTotal   int        `json:"mem_total"`
-	NetKBps    float64    `json:"net_kbps"`
-	Points     []geoPoint `json:"points"`
+	Online         int        `json:"online"`
+	Rooms          int        `json:"rooms"`
+	Registered     int        `json:"registered"`
+	Games          []gameStat `json:"games"`
+	CPU            float64    `json:"cpu"`
+	MemUsed        int        `json:"mem_used"`
+	MemTotal       int        `json:"mem_total"`
+	NetKBps        float64    `json:"net_kbps"`
+	Points         []geoPoint `json:"points"`
+	Maintenance    bool       `json:"maintenance"`
+	MaintenanceMsg string     `json:"maintenance_msg,omitempty"`
+}
+
+// defaultMaintenanceMsg is shown when maintenance mode is on but no custom
+// message was given.
+const defaultMaintenanceMsg = "Servers are under maintenance and may restart at any moment. Online play may be interrupted."
+
+// maintenanceStatus reports whether maintenance mode is on and the message to
+// show. It is LIVE-toggleable without a restart: create the file named by
+// FFE_MAINTENANCE_FILE (default /opt/ffe/maintenance.txt) to turn it on — its
+// contents are the message (empty => default) — and delete it to turn it off.
+// FFE_MAINTENANCE=1 / FFE_MAINTENANCE_MSG in the env are an always-on fallback.
+func maintenanceStatus() (bool, string) {
+	path := env("FFE_MAINTENANCE_FILE", "/opt/ffe/maintenance.txt")
+	if b, err := os.ReadFile(path); err == nil {
+		msg := strings.TrimSpace(string(b))
+		if msg == "" {
+			msg = defaultMaintenanceMsg
+		}
+		return true, msg
+	}
+	if os.Getenv("FFE_MAINTENANCE") == "1" {
+		return true, env("FFE_MAINTENANCE_MSG", defaultMaintenanceMsg)
+	}
+	return false, ""
 }
 
 func currentStats() statsResponse {
@@ -138,16 +166,19 @@ func currentStats() statsResponse {
 		games = append(games, gameStat{Name: ne.Name, GameID: ne.GameID, Online: len(pids), Rooms: rooms})
 	}
 
+	maint, maintMsg := maintenanceStatus()
 	return statsResponse{
-		Online:     len(totalOnline),
-		Rooms:      totalRooms,
-		Registered: countQuery("SELECT count(*) FROM ffe_accounts"),
-		Games:      games,
-		CPU:        m.CPU,
-		MemUsed:    m.MemUsedMB,
-		MemTotal:   m.MemTotalMB,
-		NetKBps:    m.NetKBps,
-		Points:     onlineLocations(),
+		Online:         len(totalOnline),
+		Rooms:          totalRooms,
+		Registered:     countQuery("SELECT count(*) FROM ffe_accounts"),
+		Games:          games,
+		CPU:            m.CPU,
+		MemUsed:        m.MemUsedMB,
+		MemTotal:       m.MemTotalMB,
+		NetKBps:        m.NetKBps,
+		Points:         onlineLocations(),
+		Maintenance:    maint,
+		MaintenanceMsg: maintMsg,
 	}
 }
 

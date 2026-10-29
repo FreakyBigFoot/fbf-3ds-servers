@@ -9,14 +9,14 @@ package main
 // console's online games keep working exactly as before.
 
 import (
+	"context"
 	"crypto/rand"
-	"crypto/tls"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"io"
-	"context"
 	"net"
 	"net/http"
 	"net/url"
@@ -174,6 +174,21 @@ func handleAC(w http.ResponseWriter, r *http.Request) {
 	logf("NASC   %s from %s: action=%s gameid=%s titleid=%s gamecd=%s userid=%s",
 		r.Method, clientIP(r), action, gameID, titleID, gameCode, userID)
 
+	// Self-hosted friends server (opt-in FFE_FRIENDS=1): intercept the Friends
+	// sysmodule's login (gameid 00003200 / title 0004013000003202) and point it
+	// at OUR friends endpoint instead of proxying to Pretendo. Off by default.
+	// SAFETY: FFE_FRIENDS_PIDS is an allowlist of console PIDs (comma list). When
+	// set (e.g. on the live VPS), ONLY those consoles get the friends redirect;
+	// every other player's friends login keeps proxying to Pretendo untouched, so
+	// real users' friends experience is not affected. Empty = apply to all.
+	if os.Getenv("FFE_FRIENDS") == "1" && (gameID == "00003200" || titleID == "0004013000003202") && friendsPIDAllowed(userID) {
+		if action == "LOGIN" {
+			logf("NASC   FRIENDS intercept for pid=%s (allowlisted)", userID)
+			writeRawOrdered(w, []string{"locator", "retry", "returncd", "token", "datetime"}, friendsLogin(userID))
+			return
+		}
+	}
+
 	game := gameByID(gameID)
 	if game == nil {
 		proxyUpstream(w, r, body, gameID, titleID)
@@ -211,7 +226,7 @@ func gameLogin(game *gameServer, userID string) url.Values {
 	issuedTokens[hex.EncodeToString(sum[:])] = userID
 	tokenMu.Unlock()
 
-	locator := fmt.Sprintf("%s:%d", env("FFE_PUBLIC_HOST", "10.0.0.95"), game.AuthPort)
+	locator := fmt.Sprintf("%s:%d", publicHostIP(), game.AuthPort)
 
 	logf("NASC   ISSUED %s token to pid=%s -> %s", game.Name, userID, locator)
 
@@ -222,6 +237,49 @@ func gameLogin(game *gameServer, userID string) url.Values {
 	v.Set("token", token)
 	v.Set("datetime", ninB64Encode([]byte(nascDateTime())))
 	logf("NASC   FFE-RESP: %q", v.Encode())
+	return v
+}
+
+// friendsPIDAllowed reports whether the friends redirect applies to this console
+// PID. FFE_FRIENDS_PIDS is a comma-separated allowlist; empty means "all".
+func friendsPIDAllowed(userID string) bool {
+	allow := env("FFE_FRIENDS_PIDS", "")
+	if allow == "" {
+		return true
+	}
+	for _, p := range strings.Split(allow, ",") {
+		if strings.TrimSpace(p) == strings.TrimSpace(userID) {
+			return true
+		}
+	}
+	return false
+}
+
+// friendsLogin issues a NASC token pointing the Friends sysmodule at our own
+// friends auth endpoint (FFE_FRIENDS_AUTH_PORT). Mirrors gameLogin. Only used
+// when FFE_FRIENDS=1.
+func friendsLogin(userID string) url.Values {
+	raw := make([]byte, 112)
+	if _, err := rand.Read(raw); err != nil {
+		logf("NASC   friends token generation failed: %v", err)
+		return nascError("110")
+	}
+	token := ninB64Encode(raw)
+
+	sum := sha256.Sum256([]byte(token))
+	tokenMu.Lock()
+	issuedTokens[hex.EncodeToString(sum[:])] = userID
+	tokenMu.Unlock()
+
+	locator := fmt.Sprintf("%s:%d", publicHostIP(), envPort("FFE_FRIENDS_AUTH_PORT", 61010))
+	logf("NASC   ISSUED FRIENDS token to pid=%s -> %s", userID, locator)
+
+	v := url.Values{}
+	v.Set("locator", ninB64Encode([]byte(locator)))
+	v.Set("retry", ninB64Encode([]byte("0")))
+	v.Set("returncd", ninB64Encode([]byte("001")))
+	v.Set("token", token)
+	v.Set("datetime", ninB64Encode([]byte(nascDateTime())))
 	return v
 }
 
@@ -308,7 +366,6 @@ func summarise(params url.Values) string {
 	return strings.TrimSpace(b.String())
 }
 
-
 func versionNames(vs []uint16) []string {
 	names := make([]string, 0, len(vs))
 	for _, v := range vs {
@@ -340,7 +397,6 @@ func suiteNames(cs []uint16) []string {
 	return names
 }
 
-
 // The container resolves DNS through the LAN resolver, which is exactly where
 // we installed the nasc.pretendo.cc override - so a naive upstream request
 // loops straight back into this process. Resolve upstream names with public
@@ -367,7 +423,7 @@ var upstreamClient = &http.Client{
 			}
 			var lastErr error
 			for _, ip := range ips {
-				if ip == env("FFE_PUBLIC_HOST", "10.0.0.95") {
+				if ip == publicHostIP() {
 					continue // never dial ourselves
 				}
 				d := net.Dialer{Timeout: 8 * time.Second}

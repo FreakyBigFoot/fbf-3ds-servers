@@ -197,15 +197,15 @@ func (pc *PRUDPConnection) SetSessionKey(sessionKey []byte) {
 	pc.UnreliablePacketBaseKey = append(unreliableBaseKeyPart1[:], unreliableBaseKeyPart2[:]...)
 }
 
-// ResetHeartbeat resets the connection's heartbeat timer to PRUDPConnection.StreamSettings.MaxSilenceTime.
+// ResetHeartbeat is called whenever we hear from the client. It pushes out both
+// the next keepalive ping and the silence-based kick deadline (see StartHeartbeat).
 func (pc *PRUDPConnection) ResetHeartbeat() {
-	if pc.pingKickTimer != nil {
-		pc.pingKickTimer.Stop()
+	if pc.heartbeatTimer != nil {
+		pc.heartbeatTimer.Reset(ffePingInterval)
 	}
 
-	if pc.heartbeatTimer != nil {
-		// TODO: This may not be accurate, needs more research
-		pc.heartbeatTimer.Reset(time.Duration(pc.StreamSettings.MaxSilenceTime) * time.Millisecond)
+	if pc.pingKickTimer != nil {
+		pc.pingKickTimer.Reset(ffeSilenceKick)
 	}
 }
 
@@ -244,27 +244,40 @@ func (pc *PRUDPConnection) ClearOutgoingBuffer(substreamID uint8) {
 	pc.incomingFragmentBuffers.Set(substreamID, make([]byte, 0))
 }
 
+// FFE keepalive tuning (see StartHeartbeat). During 3-4 player co-op the game
+// traffic flows peer-to-peer through the relay, so the console<->server link
+// goes idle. Strict home NATs then drop that idle UDP mapping and the console
+// silently falls off, collapsing the whole party after a couple of minutes.
+// Fix: ping often to keep the mapping warm, but be patient before declaring
+// the connection dead. These replace the old single MaxSilenceTime (10s ping /
+// 20s kick) which was too tight to survive a strict NAT during gameplay.
+const (
+	ffePingInterval = 5 * time.Second
+	ffeSilenceKick  = 45 * time.Second
+)
+
+
 // StartHeartbeat initializes the connection's heartbeat timer.
 func (pc *PRUDPConnection) StartHeartbeat() {
 	endpoint := pc.endpoint
 
-	// TODO: This may not be accurate, needs more research
-	maxSilenceTime := time.Duration(pc.StreamSettings.MaxSilenceTime) * time.Millisecond
-
-	// * Every time a packet is sent, connection.resetHeartbeat()
-	// * is called which resets this timer. If this function
-	// * ever executes, it means we haven't seen the client
-	// * in the expected time frame. If this happens, send
-	// * the client a PING packet to try and kick start the
-	// * heartbeat again
-	pc.heartbeatTimer = time.AfterFunc(maxSilenceTime, func() {
+	// heartbeatTimer fires after ffePingInterval of client silence, sends a
+	// PING, and re-arms itself so we keep prodding the console every interval.
+	// The console ACKs the ping, which resets both timers (ResetHeartbeat) and
+	// refreshes its NAT mapping. If we are already hearing from the console the
+	// timer is pushed out, so we only ping when the link is actually idle.
+	pc.heartbeatTimer = time.AfterFunc(ffePingInterval, func() {
 		endpoint.sendPing(pc)
+		if pc.heartbeatTimer != nil {
+			pc.heartbeatTimer.Reset(ffePingInterval)
+		}
+	})
 
-		// * If the heartbeat still did not restart, assume the
-		// * connection is dead and clean up
-		pc.pingKickTimer = time.AfterFunc(maxSilenceTime, func() {
-			endpoint.CleanupConnection(pc)
-		})
+	// pingKickTimer is an independent deadline: only clean up the connection
+	// after ffeSilenceKick of continuous silence (no packets at all from the
+	// console, ping ACKs included). Reset in ResetHeartbeat on every receive.
+	pc.pingKickTimer = time.AfterFunc(ffeSilenceKick, func() {
+		endpoint.CleanupConnection(pc)
 	})
 }
 

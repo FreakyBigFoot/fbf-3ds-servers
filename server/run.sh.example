@@ -3,8 +3,8 @@
 set -euo pipefail
 
 # --- your server's public address (what consoles connect to) ---
-export FFE_PUBLIC_HOST="your.server.example"     # public hostname or IP
-export FFE_SECURE_HOST="your.server.example"
+export FFE_PUBLIC_HOST="203.0.113.10"            # public IPv4 (a hostname is resolved once at startup)
+export FFE_SECURE_HOST="203.0.113.10"            # same IP
 
 # --- database (Postgres) ---
 export FFE_POSTGRES_URI="postgres://ffe:CHANGE_ME@127.0.0.1:5432/ffe?sslmode=disable"
@@ -20,5 +20,20 @@ export FFE_TLS_KEY="certs/nasc.key"
 export FFE_LE_CERT="/etc/letsencrypt/live/your.server.example/fullchain.pem"
 export FFE_LE_KEY="/etc/letsencrypt/live/your.server.example/privkey.pem"
 export FFE_ACME_WEBROOT="/opt/ffe/acme"
+
+# --- FF Explorers NEX dialect ---
+# Nothing to set. The defaults are the dialect verified on real consoles; the
+# startup log prints a DIALECT line and a WARNING if an FFE_* override changes it.
+export FFE_BROWSE_ALL=1       # server-list fix: no duplicate rooms, never over-returns (over-returning crashes the console)
+
+# --- relay (every real player is behind NAT, so you want this on) ---
+export FFE_RELAY=1            # transparent relay for the host<->joiner links
+export FFE_RELAY_V2=1         # per-console relay identity: 3-4 player rooms work on any NAT
+export FFE_RELAY_V2_PIDS=""   # optional allowlist of console PIDs; empty = all players
+# The relay binds RANDOM UDP ports from the OS ephemeral range, so forward that
+# whole range to this machine (UDP), not just 61001/61002. Pin the range so it is
+# known and survives reboots, e.g. /etc/sysctl.d/99-ffe-relay-ports.conf:
+#   net.ipv4.ip_local_port_range = 49152 60999
+# then forward UDP 49152-60999 (plus 61001-61002, and 61021-61022 for Fantasy Life).
 
 exec ./ffe-server

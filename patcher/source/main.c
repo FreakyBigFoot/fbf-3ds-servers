@@ -110,14 +110,14 @@ static bool write_patch(const unsigned char *data, unsigned int len) {
 static void draw_explanation(void) {
 	consoleSelect(&topScreen);
 	printf("\x1b[2J");
-	printf(C_CYAN "  FFE Connect" C_RESET "  -  Final Fantasy Explorers online\n");
+	printf(C_CYAN "  FreakyBigFoot's Community Servers" C_RESET "\n");
 	printf("  ------------------------------------------\n\n");
-	printf("  This lets you play FF Explorers online\n");
-	printf("  on the community server.\n\n");
+	printf("  This connects your 3DS to the community\n");
+	printf("  game servers so you can play online.\n\n");
 	printf("  When you CONNECT it:\n");
 	printf("   - reads your (anonymous) NEX login\n");
 	printf("   - registers it with the server\n");
-	printf("   - points FF Explorers at the server\n\n");
+	printf("   - points your games at the community server\n\n");
 	printf("  " C_GREEN "Every other Pretendo game keeps working" C_RESET "\n");
 	printf("  - they're passed straight through.\n\n");
 	printf("  Fully reversible: " C_YELLOW "UNDO" C_RESET " restores normal\n");
@@ -130,7 +130,7 @@ static void draw_menu(void) {
 	consoleSelect(&botScreen);
 	printf("\x1b[2J\n");
 	printf("        Choose an option:\n\n");
-	printf("    " C_GREEN "[ A ]" C_RESET "  Connect to FFE server\n\n");
+	printf("    " C_GREEN "[ A ]" C_RESET "  Connect to the servers\n\n");
 	printf("    " C_YELLOW "[ Y ]" C_RESET "  Undo  (restore Pretendo)\n\n");
 	printf("    " C_RED "[ B ]" C_RESET "  Exit\n\n");
 	printf("  ------------------------------------------\n");
@@ -160,12 +160,12 @@ static bool do_connect(void) {
 	if (status != 200) { printf(C_RED "FAIL (%lu)\n" C_RESET "  Check your internet.\n", (unsigned long)status); return false; }
 	printf(C_GREEN "ok" C_RESET "\n");
 
-	printf("  Installing FFE patch...     ");
+	printf("  Installing patch...         ");
 	if (!write_patch(friends_patch_ips, friends_patch_ips_len)) { printf(C_RED "FAIL\n" C_RESET "  SD writable?\n"); return false; }
 	printf(C_GREEN "ok" C_RESET "\n\n");
 
 	printf("  " C_GREEN "*** Connected! ***" C_RESET "\n\n");
-	printf("  After the reboot: launch FF Explorers\n");
+	printf("  After the reboot: launch your game\n");
 	printf("  and go online. Other games still work.\n");
 	return true;
 }

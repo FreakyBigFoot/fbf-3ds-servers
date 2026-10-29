@@ -11,14 +11,18 @@
 package main
 
 import (
+	"context"
+	"fmt"
+	"net"
 	"os"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/PretendoNetwork/nex-go/v2"
-	"github.com/PretendoNetwork/nex-go/v2/types"
 	"github.com/PretendoNetwork/nex-go/v2/constants"
+	"github.com/PretendoNetwork/nex-go/v2/types"
 	common_secure "github.com/PretendoNetwork/nex-protocols-common-go/v2/secure-connection"
 	common_ticket_granting "github.com/PretendoNetwork/nex-protocols-common-go/v2/ticket-granting"
 	secure "github.com/PretendoNetwork/nex-protocols-go/v2/secure-connection"
@@ -49,7 +53,6 @@ var (
 	authServerAccount   *nex.Account
 	secureServerAccount *nex.Account
 )
-
 
 // A console's NEX password (dumped, or self-registered via /register) is kept in
 // the global `accounts` store (see register.go). The ticket LoginEx builds is
@@ -167,6 +170,10 @@ func main() {
 
 	logf("stub NEX server starting")
 
+	// Resolve both host settings before anything listens; unusable values are fatal.
+	publicHostIP()
+	secureHostIP()
+
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go startNASCServer(&wg)
@@ -182,6 +189,12 @@ func main() {
 		wg.Add(2)
 		go startAuthenticationServer(&wg, g)
 		go startSecureServer(&wg, g)
+	}
+
+	// Self-hosted 3DS Friends server (opt-in). Off by default: the friends login
+	// keeps proxying to Pretendo unless FFE_FRIENDS=1. See friends-server-design.md.
+	if os.Getenv("FFE_FRIENDS") == "1" {
+		startFriendsServers(&wg)
 	}
 
 	wg.Wait()
@@ -201,7 +214,7 @@ func startAuthenticationServer(wg *sync.WaitGroup, g *gameServer) {
 	server.ByteStreamSettings.UseStructureHeader = g.UseStructureHeader
 	server.PRUDPV1Settings.LegacyConnectionSignature = g.LegacyConnectionSignature
 	server.AccessKey = g.AccessKey
-	if env("FFE_TICKET_V1", "") == "1" {
+	if env("FFE_TICKET_V1", "1") == "1" { // 3DS Kerberos ticket format; default ON (verified)
 		server.KerberosTicketVersion = 1
 	}
 
@@ -231,7 +244,7 @@ func startAuthenticationServer(wg *sync.WaitGroup, g *gameServer) {
 	securePort := g.SecurePort
 	secureURL := types.NewStationURL("")
 	secureURL.SetURLType(constants.StationURLPRUDPS)
-	secureURL.SetAddress(env("FFE_SECURE_HOST", "127.0.0.1"))
+	secureURL.SetAddress(secureHostIP())
 	secureURL.SetPortNumber(uint16(securePort))
 	secureURL.SetConnectionID(1)
 	secureURL.SetPrincipalID(types.NewPID(2))
@@ -242,7 +255,7 @@ func startAuthenticationServer(wg *sync.WaitGroup, g *gameServer) {
 
 	port := g.AuthPort
 	logf("AUTH   %s listening on udp/%d  -> secure at %s:%d  (key %s)",
-		g.Name, port, env("FFE_SECURE_HOST", "127.0.0.1"), securePort, g.AccessKey)
+		g.Name, port, secureHostIP(), securePort, g.AccessKey)
 	server.Listen(port)
 }
 
@@ -253,7 +266,7 @@ func startSecureServer(wg *sync.WaitGroup, g *gameServer) {
 	endpoint := nex.NewPRUDPEndPoint(1)
 	endpoint.IsSecureEndPoint = true
 	registerSecureEndpoint(g.DisplayName(), g.GameID, endpoint) // per-game dashboard stats
-	installSessionLogging(g.Name, endpoint) // connect/disconnect logging (drop vs clean-leave)
+	installSessionLogging(g.Name, endpoint)                     // connect/disconnect logging (drop vs clean-leave)
 	endpoint.ServerAccount = secureServerAccount
 	endpoint.AccountDetailsByPID = accountDetailsByPID
 	endpoint.AccountDetailsByUsername = accountDetailsByUsername
@@ -263,17 +276,19 @@ func startSecureServer(wg *sync.WaitGroup, g *gameServer) {
 	server.ByteStreamSettings.UseStructureHeader = g.UseStructureHeader
 	server.PRUDPV1Settings.LegacyConnectionSignature = g.LegacyConnectionSignature
 	server.AccessKey = g.AccessKey
-	if env("FFE_TICKET_V1", "") == "1" {
+	if env("FFE_TICKET_V1", "1") == "1" { // 3DS Kerberos ticket format; default ON (verified)
 		server.KerberosTicketVersion = 1
 	}
 	// FFE's MatchMaking structures are pre-3.4.0 (no ProgressScore field in
 	// MatchmakeSession). Override just the MatchMaking library version so the
 	// struct parser reads the right fields.
-	if v := env("FFE_MM_MINOR", ""); v != "" {
+	// Default 3 (= 3.3.0, verified on real consoles). Unset or empty => 3.
+	if v := env("FFE_MM_MINOR", "3"); v != "" {
 		if mn, e := strconv.Atoi(v); e == nil {
 			server.LibraryVersions.MatchMaking = nex.NewLibraryVersion(3, mn, 0)
 		}
 	}
+	logDialect(g, server)
 
 	endpoint.OnData(func(packet nex.PacketInterface) { logRMC("SEC:"+g.Name, packet) })
 	endpoint.OnError(func(err *nex.Error) { logf("SECURE [%s] error: %v", g.Name, err) })
@@ -286,6 +301,37 @@ func startSecureServer(wg *sync.WaitGroup, g *gameServer) {
 	commonSec.EnableInsecureRegister()
 	commonSec.CreateReportDBRecord = func(pid types.PID, reportID types.UInt32, reportData types.QBuffer) error {
 		return nil
+	}
+	// Relay v2 (FFE_RELAY_V2=1): overwrite each console's registered station URLs
+	// with its relay identity, so the ENTIRE mesh (GetSessionURLs, participant
+	// list, Pia handoff) distributes the relay address for every console. This is
+	// what makes the 3rd/4th peer reachable: the host learns every peer at the
+	// relay, not its direct address. See relay_v2.go.
+	rewriteReg := func(packet nex.PacketInterface) {
+		if relay2 == nil {
+			return
+		}
+		conn, ok := packet.Sender().(*nex.PRUDPConnection)
+		if !ok || !v2Enabled(uint64(conn.PID())) || canDirect(uint64(conn.PID())) {
+			return
+		}
+		relay2.rewriteStationURLs(conn)
+	}
+	commonSec.OnAfterRegister = func(packet nex.PacketInterface, urls types.List[types.StationURL]) { rewriteReg(packet) }
+	commonSec.OnAfterRegisterEx = func(packet nex.PacketInterface, urls types.List[types.StationURL], data types.DataHolder) {
+		rewriteReg(packet)
+	}
+	// Relay v2, part 2: override Register/RegisterEx so a v2 console also gets its
+	// RELAY IDENTITY back as its own public address (urlPublic), which the stock
+	// handler builds from the real address before the rewrite hook runs. Without
+	// this, joiners self-report their real address and try to connect joiner<->
+	// joiner directly (which fails on cellular/VPN NAT). This supersedes the
+	// OnAfterRegister* rewrite above for the register path. See register_identity.go.
+	// Gated on the env (not relay2!=nil) so install order can't matter; the handler
+	// itself no-ops to stock behaviour for any non-v2 console. Scoped to FFE so live
+	// Fantasy Life registration is never touched.
+	if os.Getenv("FFE_RELAY_V2") == "1" && g.GameID == FFEGameID {
+		installIdentityRegister(sec)
 	}
 
 	// Matchmaking (create/join rooms) - needs Postgres. The common protocols
@@ -346,7 +392,17 @@ func startSecureServer(wg *sync.WaitGroup, g *gameServer) {
 		// through us. With FFE_RELAY unset, behaviour is unchanged (direct P2P).
 		if os.Getenv("FFE_RELAY") == "1" {
 			if relay == nil {
-				relay = newRelayManager(env("FFE_PUBLIC_HOST", "10.0.0.95"))
+				relay = newRelayManager(publicHostIP())
+			}
+			// Relay v2 (opt-in FFE_RELAY_V2=1): per-console identity relay so ALL
+			// mesh links, including joiner<->joiner, ride the relay and work
+			// through cellular/VPN/symmetric NAT. Gated per session on the host
+			// PID via FFE_RELAY_V2_PIDS. See relay-redesign-design.md.
+			if relay2 == nil && os.Getenv("FFE_RELAY_V2") == "1" {
+				relay2 = newRelayV2(publicHostIP())
+				relay2.startSweeper(postgres)
+				logf("RELAY2 per-console identity relay enabled (public host %s, hosts=%q)",
+					relay2.publicHost, env("FFE_RELAY_V2_PIDS", "<all>"))
 			}
 			// Distinct-IP mode: FFE_RELAY_IPS="ip1,ip2,ip3" gives each peer link
 			// its own IP so a console sees every peer at a different address
@@ -373,4 +429,81 @@ func startSecureServer(wg *sync.WaitGroup, g *gameServer) {
 	port := g.SecurePort
 	logf("SECURE %s listening on udp/%d", g.Name, port)
 	server.Listen(port)
+}
+
+// Consoles only accept IPv4 literals in NEX station URLs and locators, so the
+// two host settings are resolved once at startup and the process refuses to
+// start on an unusable value. A literal (the live config) passes through as-is.
+type hostSetting struct {
+	envName, fallback, usedIn string
+	once                      sync.Once
+	addr                      string
+}
+
+var (
+	publicHost = &hostSetting{envName: "FFE_PUBLIC_HOST", fallback: "10.0.0.95", usedIn: "station URLs and NASC locators"}
+	secureHost = &hostSetting{envName: "FFE_SECURE_HOST", fallback: "127.0.0.1", usedIn: "the secure station URL"}
+)
+
+func (h *hostSetting) ip() string {
+	h.once.Do(func() {
+		host := env(h.envName, h.fallback)
+		ip, err := resolvePublicHost(host)
+		if err != nil {
+			logf("FATAL  %s=%q: %v. Set it to your public IPv4 address.", h.envName, host, err)
+			os.Exit(1)
+		}
+		if ip != host {
+			logf("CONFIG %s %q resolved to %s (used in %s)", h.envName, host, ip, h.usedIn)
+		}
+		h.addr = ip
+	})
+	return h.addr
+}
+
+func publicHostIP() string { return publicHost.ip() }
+func secureHostIP() string { return secureHost.ip() }
+
+// resolvePublicHost turns an IPv4 literal or a DNS name into a dotted IPv4
+// string. IPv6 is rejected because the 3DS is IPv4-only.
+func resolvePublicHost(host string) (string, error) {
+	if ip := net.ParseIP(host); ip != nil {
+		if ip4 := ip.To4(); ip4 != nil {
+			return ip4.String(), nil
+		}
+		return "", fmt.Errorf("%q is not an IPv4 address (consoles are IPv4-only)", host)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	ips, err := upstreamResolver.LookupIP(ctx, "ip4", host)
+	if err != nil {
+		return "", fmt.Errorf("does not resolve to an IPv4 address: %w", err)
+	}
+	for _, ip := range ips {
+		if ip4 := ip.To4(); ip4 != nil {
+			return ip4.String(), nil
+		}
+	}
+	return "", fmt.Errorf("does not resolve to an IPv4 address")
+}
+
+// logDialect prints the effective NEX dialect of a secure server at startup and
+// warns when FF Explorers is off the verified one.
+func logDialect(g *gameServer, server *nex.PRUDPServer) {
+	mm := server.LibraryVersions.MatchMaking
+	hdr := "off"
+	if server.ByteStreamSettings.UseStructureHeader {
+		hdr = "on"
+	}
+	logf("DIALECT %s: nex lib %d.%d.%d, struct header %s, kerberos ticket v%d, matchmaking lib %d.%d.%d, access key %s",
+		g.Name, g.LibMajor, g.LibMinor, g.LibPatch, hdr, server.KerberosTicketVersion,
+		mm.Major, mm.Minor, mm.Patch, g.AccessKey)
+	if g.GameID == FFEGameID {
+		ok := g.LibMajor == 3 && g.LibMinor == 5 && g.LibPatch == 0 && !server.ByteStreamSettings.UseStructureHeader &&
+			server.KerberosTicketVersion == 1 && mm.Major == 3 && mm.Minor == 3 && mm.Patch == 0 &&
+			!g.LegacyConnectionSignature
+		if !ok {
+			logf("WARNING %s is not running the verified dialect (lib 3.5.0, header off, ticket v1, matchmaking 3.3.0): consoles will connect but room creation fails", g.Name)
+		}
+	}
 }

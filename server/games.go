@@ -37,13 +37,19 @@ var ffeVariants = []gameServer{
 	{Name: "4.0.0 hdr", LibMajor: 4, LibMinor: 0, LibPatch: 0, UseStructureHeader: true},
 	{Name: "3.6.1 hdr legacy-sig", LibMajor: 3, LibMinor: 6, LibPatch: 1, UseStructureHeader: true, LegacyConnectionSignature: true},
 	{Name: "2.0.0 legacy-sig", LibMajor: 2, LibMinor: 0, LibPatch: 0, LegacyConnectionSignature: true},
+	// Index 11: what FF Explorers actually speaks (verified on real consoles, see
+	// nex_dialect_test.go). Default when FFE_VARIANT is unset.
+	{Name: "3.5.0 (verified FFE dialect)", LibMajor: 3, LibMinor: 5, LibPatch: 0},
 }
+
+// ffeDefaultVariant is the index of the verified dialect above.
+const ffeDefaultVariant = 11
 
 var games []gameServer
 
 func init() {
-	idx := 0
-	if v, err := strconv.Atoi(env("FFE_VARIANT", "0")); err == nil && v >= 0 && v < len(ffeVariants) {
+	idx := ffeDefaultVariant
+	if v, err := strconv.Atoi(env("FFE_VARIANT", strconv.Itoa(ffeDefaultVariant))); err == nil && v >= 0 && v < len(ffeVariants) {
 		idx = v
 	}
 
